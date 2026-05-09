@@ -1,10 +1,7 @@
-# Week 4: Does Iterative Refinement Actually Distill Task Knowledge? (May 9, 2026)
+# Week 4: Does Iterative Refinement Actually Distill Task Knowledge?
 
-## Recap
 
-Last week we generalized the ICR pipeline to arbitrary classification tasks through a TaskSpec interface and benchmarked against CS-ICL across four BBH tasks. The core finding was that we land within 1pp of CS-ICL on three of four tasks, but causal_judgement was a hard outlier where the pipeline regressed by 8pp. We closed with three open questions: how do we find tasks where iterative refinement should pull clearly ahead, can we quantify the structural boundary that predicts when refinement helps, and what exactly is causing regression on tasks like causal_judgement?
-
-This week we ran a systematic diagnostic across all 11 BBH tasks and three AGIEval tasks, and we now have an answer to all three questions. The answer to the first question is not the one we hoped for.
+This week we ran a systematic diagnostic across all 11 BBH tasks and three AGIEval tasks, and analyze the result primarily based on cross-model transferability to understand the content distilled through our pipeline is task-specific knowledge or source-model specific reasoning patch.
 
 ## Expanding the Benchmark
 
@@ -14,7 +11,7 @@ Seven of the eleven BBH tasks hit ≥95% accuracy after the Phase 0 bootstrap al
 
 ## The Central Finding: Source Gains Do Not Imply Transferable Distillation
 
-The headline result is unambiguous and not what we expected. Across the five non-ceiling BBH tasks, the full oracle-injected ICRefine pipeline falls below CS-ICL for every target model family:
+Across the five non-ceiling BBH tasks, the full oracle-injected ICRefine pipeline falls below CS-ICL for every target model family:
 
 | Target | CS-ICL | Full ICRefine | Δ |
 |--------|--------|---------------|---|
@@ -23,43 +20,39 @@ The headline result is unambiguous and not what we expected. Across the five non
 | Llama-3.3 | 78.3% | 75.7% | −2.6 pp |
 | Claude-3.7 | 87.7% | 84.0% | −3.7 pp |
 
-The source model (gpt-4.1-mini) gains from refinement. The targets do not. We bootstrapped 95% confidence intervals over the five tasks and found that the GPT-4.1 and Claude deficits both exclude zero (GPT: [−6.2, −0.7]; Claude: [−6.6, −0.9]). This is not noise.
+It appears that though the source model (gpt-4.1-mini) gains from refinement, the non-trained target models do not in general. We bootstrapped 95% confidence intervals over the five tasks and found that the GPT-4.1 and Claude deficits both exclude zero (GPT: [−6.2, −0.7]; Claude: [−6.6, −0.9]). This is not noise.
 
-The clearest single piece of evidence is geometric_shapes Phase 2 case studies. That stage improves source model accuracy by +5.0 pp. At the same time, Claude drops 3.3 pp and Llama drops 6.7 pp. The same artifact that makes the source model better is actively making target models worse. This sign reversal is stronger evidence than aggregate underperformance: it rules out the explanation that the cheatsheet is simply uninformative and shows instead that it is encoding something the source model needs but that activates incorrectly for other models.
+Out of all tasks evaluated the clearest piece of evidence is geometric_shapes Phase 2 case studies. That stage improves source model accuracy by +5.0 pp. At the same time, Claude drops 3.3 pp and Llama drops 6.7 pp. The same artifact that makes the source model better is actively making target models worse. This sign reversal makes unlikely the explanation that the cheatsheet is simply uninformative and shows instead that it is encoding something the source model needs but that activates incorrectly for other models.
 
 ## What Is Actually Being Distilled
 
-The problem is not that refinement adds nothing. The problem is that it adds the wrong thing. There is a clean distinction between two kinds of cheatsheet content: task-related knowledge (rules that target error patterns all models share) and model-specific reasoning patches (rules that fix one model's failures but fire on inputs other models already handle correctly). Failure-driven refinement, when it works, distills the former. When it fails, it distills the latter and reduces transferability.
+We identify that the problem is not that refinement adds nothing. The problem is that it adds the wrong thing. There is a clean distinction between two kinds of cheatsheet content: task-related knowledge and model-specific reasoning patches (rules that fix one model's failures but disrupt on inputs other models already handle correctly). Failure-driven refinement, when it works, distills the former. When it fails, it distills the latter and reduces transferability.
 
-We identified three failure mechanisms that push distillation toward model-specific patches.
+To study how model-specific reasoning patches are baked into the cheatsheets we identified three failure mechanisms that push distillation toward model-specific patches:
 
-### Oracle Contamination (Primary Mechanism)
+1. Oracle Contamination 
 
-We inject gold chain-of-thought traces from the training data as contrast examples when generating PK revisions and case studies. The intuition is that showing the generator a correct reasoning path should produce better rules. It turns out this assumption is wrong in an interesting way.
+injection of chain-of-thought traces from the training data as contrast examples when generating PK revisions and case studies. The intuition is that showing the generator a correct reasoning path should produce better rules. It turns out this assumption is wrong in an interesting way.
 
-When the oracle reasoning trace is too specific to how one model family approaches a problem, the generator compresses it into a patch that resembles the source model's local reasoning trajectory rather than a model-independent task rule. The patch then activates on inputs where the source fails but targets already solve correctly.
+When the oracle reasoning trace is too specific to how one model family approaches a problem, the generator compresses it into a patch that resembles the source model's local reasoning trajectory rather than a model-independent task rule.
 
 The diagnostic test: remove oracle access and check whether transfer improves. On causal_judgement (the most heterogeneous task), removing oracle injection improves all target models by +1.9 to +3.8 pp. If oracle traces were providing genuine task knowledge, removing them should hurt. The fact that removal helps tells us they were over-specifying the source model's reasoning path.
 
-The complementary evidence comes from AGIEval. When we add oracle injection to AGIEval experiments, GPT-4.1 (same family as gpt-4.1-mini source) gains +16.5 pp mean. Gemini and Llama gain only +2.7 and +2.2 pp. Oracle traces are not uniformly harmful — they are family-selective. They transfer within the source model family because source and same-family target share similar reasoning structure, and they fail across families because the oracle trace encodes a family-specific inference pattern rather than an abstract task rule.
+Similar results are shown in runs on the AGIEval datasets. When we add oracle injection to AGIEval experiments, GPT-4.1 (same family as gpt-4.1-mini source) gains +16.5 pp mean. Gemini and Llama gain only +2.7 and +2.2 pp. Oracle traces are not uniformly harmful but are family-selective in this case. They transfer within the source model family likely due to source and same-family target share similar reasoning structure, and they fail across families because the oracle trace encodes a family-specific inference pattern rather than an abstract task rule.
 
-### Partition Overfitting (Secondary Mechanism)
+2. Partition Overfitting 
 
-Phase 2 partitions remaining failures by structural type and converts each partition into a localized "Activate If / Why" case study. The design assumes that recurring failure patterns inside the source failure set reflect task-level structure. Often they do not.
+Phase 2 partitions remaining failures by structural type and converts each partition into a localized case study. The design assumes that recurring failure patterns inside the source failure set reflect task-level structure.
 
-On causal_judgement, 35 training failures span six different causal subtypes — joint-AND causation, divided omission, overdetermination, and others. Phase 2 promotes narrow clusters of these into case study atoms. None of the clusters are shared by all target models, so the atoms activate on heterogeneous inputs across targets and produce regressions: Claude −4.2 pp, Gemini −1.9 pp, Llama −2.3 pp.
+For example, on causal_judgement, 35 training failures span six different causal subtypes — joint-AND causation, divided omission, overdetermination, and others. Phase 2 promotes narrow clusters of these into case study atoms. None of the clusters are shared by all target models, so the atoms activate on heterogeneous inputs across targets and produce regressions: Claude −4.2 pp, Gemini −1.9 pp, Llama −2.3 pp.
 
-On formal_fallacies, three of four case studies generated by Phase 2 target illicit conversion of conditionals — the most frequent pattern in the source failure set. But illicit conversion is not the only fallacy type, and greedy fixation on one pattern while leaving others uncovered produces case studies that are both narrow and brittle.
-
-Geometric_shapes is the most interesting case: SVG-parsing failures are concentrated enough that Phase 2 improves the source by +5.0 pp. But even concentrated source clusters transfer only when target models share that failure mode, and not all do.
-
-### Bootstrap Convergence (Supporting Mechanism)
+3. Bootstrap Convergence
 
 When Phase 1 converges early with an incomplete PK that still passes the gate, residual errors get delegated to Phase 2. Phase 2 then handles failures with localized memory atoms rather than global rule revisions, which is structurally more likely to produce source-private content.
 
-On geometric_shapes, standard Phase 1 applies zero patches — the bootstrap PK passes the gate immediately despite leaving accuracy on the table. We tested an evolutionary algorithm variant (EA Phase 1) that maintains multiple PK candidates and uses crossover. EA Phase 1 improved PK-only accuracy from 72.7% to 78.7% (+6.0 pp, 3-seed mean) and generated zero accepted case studies. Better global compression eliminates the demand for local patching.
+On geometric_shapes, standard Phase 1 applies zero patches, meaning the bootstrap PK passes the gate immediately despite leaving accuracy on the table. We tested an evolutionary algorithm variant (EA Phase 1) that maintains multiple PK candidates and uses crossover. EA Phase 1 improved PK-only accuracy from 72.7% to 78.7% (3-seed mean) and generated zero accepted case studies. Better global compression eliminates the demand for local patching.
 
-## Failure Geometry Predicts Direction, Not Magnitude
+Note: Failure geometry predicts direction but not magnitude
 
 The three failure mechanisms explain how specificity enters the artifact, but they do not tell us when refinement is likely to help in the first place. We looked at failure-set Jaccard overlap (J) between source and target models on the CS-ICL baseline as a screening tool.
 
@@ -73,7 +66,7 @@ We mapped five regimes:
 | Floor inflation | LAR | 0.66 | ~28% | High J uninformative; overlap is floor-driven, not structurally shared |
 | Ceiling contraction | LLR | 0.30 | ~85% | Low J warns correctly; model-private residuals dominate |
 
-Low J (<0.3) is a reliable warning: source-failure-targeted refinement is unlikely to transfer. High J is necessary but not sufficient — high-overlap tasks like GS can still fail when oracle contamination or partition overfitting are present. Importantly, Jaccard is not predictive of transfer magnitude across our tasks (Spearman ρ = −0.39, p = 0.15); it functions as a one-sided screen rather than a gain predictor.
+Low J (<0.3) is a reliable warning: source-failure-targeted refinement is unlikely to transfer. High J is necessary but not sufficient as high-overlap tasks like GS can still fail when oracle contamination or partition overfitting are present. Importantly, Jaccard is not predictive of transfer magnitude across our tasks (Spearman ρ = −0.39, p = 0.15). Instead, it functions more as a one-sided screen rather than a gain predictor.
 
 The AGIEval tasks stress-test the extremes. LSAT-AR at 28% accuracy has J = 0.66, but that overlap is almost entirely floor-driven: both source and target fail on most of the test set because the task is genuinely hard, not because they share the same error pattern. LSAT-LR at 85% has J = 0.30, which correctly predicts that model-private residuals dominate at near-ceiling accuracy and source-failure-targeted refinement will not transfer.
 
@@ -83,24 +76,14 @@ Given these results, we tested whether removing the conditions that produce sour
 
 RULE augmentation is the oracle-free, validation-gated, additive alternative: start from CS-ICL, generate candidate RULE lines without gold CoT, validate each on a held-out split, and append accepted lines without rewriting the PK or adding case studies. The design removes oracle contamination by construction and minimizes partition overfitting by avoiding localized memory atoms.
 
-The results are near-neutral overall, but with one clear positive: date_understanding gains +1.3 pp (GPT-4.1), +1.0 pp (Gemini), +3.0 pp (Llama). Date arithmetic errors are structurally shared — all models make the same class of mistake when computing day-of-week from a date offset — and the accepted RULE line correctly describes the arithmetic operation rather than mimicking a source-specific reasoning trace. When failure structure is shared and the rule is task-structural, conservative augmentation works.
+The results are near-neutral overall on the training model but with lower cross-model accuracy loss with one clear positive: date_understanding gains +1.3 pp (GPT-4.1), +1.0 pp (Gemini), +3.0 pp (Llama). Date arithmetic errors are structurally shared and the accepted RULE line correctly describes the arithmetic operation rather than mimicking a source-specific reasoning trace. When failure structure is shared and the rule is task-structural, conservative augmentation works.
 
-We also ran ProTeGi under the same cross-model evaluation criterion to check whether the negative transfer pattern is specific to ICRefine's partition-based design. It is not. On BBH, ProTeGi produces +0.2, +0.6, −1.3 pp for GPT, Gemini, Llama — essentially the same near-neutral pattern as RULE augmentation, and well below the regression seen in full ICRefine. On AGIEval, ProTeGi produces +3.3 pp for GPT-4.1 and near-zero for cross-family targets — the same intra-family / cross-family asymmetry we see in ICRefine. The trade-off between source gains and transfer is in failure-targeted distillation itself, not in the specific optimizer we use.
-
-## What This Means
-
-Three principles come out of this:
-
-**Source accuracy and transferability measure different things.** Improving the source model shows that a correction works for one model. It says nothing about whether the correction encodes something more general. A pipeline that gains on the source may simultaneously push the cheatsheet toward model-specific patches.
-
-**Failure overlap governs the direction of the trade-off.** Failure-set Jaccard is a cheap screen you can compute before any refinement runs. Low J warns that source-failure-targeted refinement is likely to produce source-specific patches. High J is necessary but not sufficient — you also need conservative distillation to avoid the failure mechanisms that operate under high overlap.
-
-**Oracle CoT is the highest-specificity signal in the pipeline.** Providing the generator with gold reasoning traces was the most intuitive thing to do, and it was also the most reliable way to bias the artifact toward the source model's family. Oracle traces can be useful, but only when the target shares the source family's failure structure. When it does not, oracle-free is almost always better for transfer.
+We also ran ProTeGi (prompt optimization techique) under the same cross-model evaluation criterion to check whether the negative transfer pattern is specific to ICRefine's partition-based design. It is not. On BBH, ProTeGi produces +0.2, +0.6, −1.3 pp for GPT, Gemini, Llama, essentially the same near-neutral pattern as RULE augmentation, and well below the regression seen in full ICRefine. On AGIEval, ProTeGi produces +3.3 pp for GPT-4.1 and near-zero for cross-family targets, which is the same intra-family / cross-family asymmetry we see in ICRefine. The trade-off between source gains and transfer is in failure-targeted distillation itself, not in the specific optimizer we use.
 
 ## Next Steps
 
-The most immediate open question is: what does this mean for the original magma setting? In blog 3 we argued that magma equational implication is exactly the domain where iterative refinement should win — failure modes are deep, structurally cohesive, and require algebraic conditions that a single pass cannot capture. The analysis here suggests refinement is more likely to help when failures are structurally shared across models, which in magma should hold because the failure modes are driven by the task's algebraic structure rather than model-specific reasoning preferences. Running CS-ICL on magma for a direct comparison is the cleanest test of that claim.
+The current direction for further investigation in to failure-driven knowledge distillation is to further finetune on the RULES augmentation pipeline to see if we can get statistically significant boost in accuracy from CS-ICL on the source model. Once this is achieved then the paper overall will have a clearer backbone that shows non-trivial knowledge distillation based on failure analysis is possible without degrading to solely source-model specific reasoning patching and avoids being completely diagnostic.
 
-The second open question is whether the diagnostic framework — Jaccard screening plus a taxonomy of specificity-increasing mechanisms — can predict in advance which tasks to attempt iterative refinement on and which to skip. We have shown it works retrospectively. A prospective test requires running the Jaccard computation and deciding based on it before any refinement, then measuring whether the outcomes match the prediction.
+The second direction is to further investigate on whether the diagnostic framework, Jaccard screening plus a taxonomy of specificity-increasing mechanisms, can be modified to predict in advance which tasks to attempt iterative refinement on and which to skip. We have shown it works retrospectively. A prospective test requires running the Jaccard computation and deciding based on it before any refinement, then measuring whether the outcomes match the prediction.
 
 Code is available at: https://github.com/AndrewRqy/ICRefine
